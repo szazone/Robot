@@ -1,0 +1,632 @@
+/**
+  ******************************************************************************
+  * @file    debugSerial.c
+  * @author  szazone
+  * @version V0.0.1
+  * @date    03-August-2022
+  * @brief	 Debug serial port (USART1) source file.
+  *
+  ******************************************************************************
+  */
+
+/* Includes ------------------------------------------------------------------*/
+#include "debugSerial.h"
+
+// Application/User/Core
+#include "usart.h"
+// Middlewares/FreeRTOS
+#include "cmsis_os2.h"
+#include "FreeRTOS.h"
+#include "task.h"
+// Bsp
+#include "motor.h"
+
+extern osMutexId_t AppPrintfMutexHandle;
+char DebugSerial_printf_buf[450];
+unsigned short DebugSerial_RX_STA;
+unsigned char DebugSerial_RX_BUF[DebugSerial_PARM_LEN+DebugSerial_MAX_FNAME_LEN];
+USART_RECEIVE_T DebugSerial_data;
+USART_RECEIVE_T* DebugSerial_data_p = &DebugSerial_data;
+DebugSerial_nametab debugserial_nametab[] = {
+#if DebugSerial_USE_WRFUNS==1 	//如果使能了读写操作
+	(void*)DebugSerial_readAddr,(const unsigned char*)"u32 read_addr(u32 addr)",
+	(void*)DebugSerial_writeAddr,(const unsigned char*)"void write_addr(u32 addr,u32 val)",	 
+#endif		   
+	(void*)Motor_setSpeed,(const unsigned char*)"Motor_setSpeed(unsigned char motorNum,int rpm)",				
+};
+unsigned char *sys_cmd_tab[] = {
+	(unsigned char *)"?",
+	(unsigned char *)"help",
+	(unsigned char *)"list",
+	(unsigned char *)"id",
+	(unsigned char *)"hex",
+	(unsigned char *)"dec",
+	(unsigned char *)"runtime",	   
+};
+DebugSerial_dev debugserial_dev = {
+	debugserial_nametab,
+	DebugSerial_init,
+	DebugSerial_cmdRec,
+	DebugSerial_exe,
+	DebugSerial_scan,
+	sizeof(debugserial_nametab)/sizeof(DebugSerial_nametab),//函数数量
+	0,	  	//参数数量
+	0,	 	//函数ID
+	1,		//参数显示类型,0,10进制;1,16进制
+	0,		//参数类型.bitx:,0,数字;1,字符串	    
+	0,	  	//每个参数的长度暂存表,需要MAX_PARM个0初始化
+	0,		//函数的参数,需要PARM_LEN个0初始化
+}; 
+#pragma import(__use_no_semihosting)
+//标准库需要的支持函数
+struct __FILE
+{
+	int handle;
+};
+FILE __stdout;
+//定义_sys_exit()以避免使用半主机模式
+void _sys_exit(int x)
+{
+	x = x;
+}
+
+// 实现DebugSerial_DebugSerial_printf函数重定向到串口1，即支持DebugSerial_DebugSerial_printf信息到USART1
+int fputc(int ch, FILE* f)
+{
+	while ((USART1->SR & 0X40) == 0); //循环发送,直到发送完毕
+	USART1->DR = (unsigned char)ch;
+	return ch;
+}
+
+void DebugSerial_printf(char* format, ...)
+{
+	va_list ap;
+
+	va_start(ap, format);
+	sprintf(DebugSerial_printf_buf, format, ap);
+	va_end(ap);
+
+	/* 互斥操作 */
+	osMutexAcquire(AppPrintfMutexHandle, osWaitForever);
+	printf("%s", DebugSerial_printf_buf);
+	osMutexRelease(AppPrintfMutexHandle);
+}
+
+static unsigned char DebugSerial_strcmp(unsigned char* str1, unsigned char* str2)
+{
+	while (1) {
+		if (*str1 != *str2) { return 1; } //不相等
+		if (*str1 == '\0') { break; } //对比完成了.
+		str1++;
+		str2++;
+	}
+	return 0;//两个字符串相等
+}
+
+static void DebugSerial_strcopy(unsigned char* str1, unsigned char* str2)
+{
+	while (1) {
+		*str2 = *str1;	//拷贝
+		if (*str1 == '\0') { break; } //拷贝完成了.
+		str1++;
+		str2++;
+	}
+}
+
+static unsigned char DebugSerial_strlen(unsigned char* str)
+{
+	unsigned char len = 0;
+	while (1) {
+		if (*str == '\0') { break; } //拷贝完成了.
+		len++;
+		str++;
+	}
+	return len;
+}
+
+static unsigned int DebugSerial_pow(unsigned char m, unsigned char n)
+{
+	unsigned int result = 1;
+	while (n--) { result *= m; }
+	return result;
+}
+
+static unsigned char DebugSerial_str2num(unsigned char* str, unsigned int* res)
+{
+	unsigned int t;
+	int tnum;
+	unsigned char bnum = 0;		//数字的位数
+	unsigned char* p;
+	unsigned char hexdec = 10;	//默认为十进制数据
+	unsigned char flag = 0;		//0,没有符号标记;1,表示正数;2,表示负数.
+	p = str;
+	*res = 0; //清零.
+	while (1) {
+		if ((*p <= '9' && *p >= '0') || ((*str == '-' || *str == '+') && bnum == 0) || (*p <= 'F' && *p >= 'A') || (*p == 'X'
+		        && bnum == 1)) { //参数合法
+			if (*p >= 'A') { hexdec = 16; }	//字符串中存在字母,为16进制格式.
+			if (*str == '-') {flag = 2; str += 1;} //偏移掉符号
+			else if (*str == '+') {flag = 1; str += 1;} //偏移掉符号
+			else { bnum++; }			//位数增加.
+		} else if (*p == '\0') { break; }	//碰到结束符,退出.
+		else { return 1; }				//不全是十进制或者16进制数据.
+		p++;
+	}
+	p = str;			  //重新定位到字符串开始的地址.
+	if (hexdec == 16) {		//16进制数据
+		if (bnum < 3) { return 2; }			//位数小于3，直接退出.因为0X就占了2个,如果0X后面不跟数据,则该数据非法.
+		if (*p == '0' && (*(p + 1) == 'X')) { //必须以'0X'开头.
+			p += 2;	//偏移到数据起始地址.
+			bnum -= 2; //减去偏移量
+		} else { return 3; }//起始头的格式不对
+	} else if (bnum == 0) { return 4; } //位数为0，直接退出.
+	while (1) {
+		if (bnum) { bnum--; }
+		if (*p <= '9' && *p >= '0') { t = *p - '0'; }	//得到数字的值
+		else { t = *p - 'A' + 10; }				//得到A~F对应的值
+		*res += t * DebugSerial_pow(hexdec, bnum);
+		p++;
+		if (*p == '\0') { break; } //数据都查完了.
+	}
+	if (flag == 2) { //是负数?
+		tnum = -*res;
+		*res = tnum;
+	}
+	return 0;//成功转换
+}
+
+unsigned char DebugSerial_getCmdName(unsigned char* str, unsigned char* cmdname, unsigned char* nlen, unsigned char maxlen)
+{
+	*nlen = 0;
+	while (*str != ' ' && *str != '\0') { //找到空格或者结束符则认为结束了
+		*cmdname = *str;
+		str++;
+		cmdname++;
+		(*nlen)++;//统计命令长度
+		if (*nlen >= maxlen) { return 1; } //错误的指令
+	}
+	*cmdname = '\0'; //加入结束符
+	return 0;//正常返回
+}
+
+unsigned char DebugSerial_searchNextC(unsigned char* str)
+{
+	str++;
+	while (*str == ' ' && str != '\0') { str++; }
+	return *str;
+}
+
+unsigned char DebugSerial_getFname(unsigned char* str, unsigned char* fname, unsigned char* pnum, unsigned char* rval)
+{
+	unsigned char res;
+	unsigned char fover = 0;	 //括号深度
+	unsigned char* strtemp;
+	unsigned char offset = 0;
+	unsigned char parmnum = 0;
+	unsigned char temp = 1;
+	unsigned char fpname[6];//void+X+'/0'
+	unsigned char fplcnt = 0; //第一个参数的长度计数器
+	unsigned char pcnt = 0;	 //参数计数器
+	unsigned char nchar;
+	//判断函数是否有返回值
+	strtemp = str;
+	while (*strtemp != '\0') { //没有结束
+		if (*strtemp != ' ' && (pcnt & 0X7F) < 5) { //最多记录5个字符
+			if (pcnt == 0) { pcnt |= 0X80; } //置位最高位,标记开始接收返回值类型
+			if (((pcnt & 0x7f) == 4) && (*strtemp != '*')) { break; } //最后一个字符,必须是*
+			fpname[pcnt & 0x7f] = *strtemp; //记录函数的返回值类型
+			pcnt++;
+		} else if (pcnt == 0X85) { break; }
+		strtemp++;
+	}
+	if (pcnt) {//接收完了
+		fpname[pcnt & 0x7f] = '\0'; //加入结束符
+		if (DebugSerial_strcmp(fpname, (unsigned char*)"void") == 0) { *rval = 0; } //不需要返回值
+		else { *rval = 1; }							 //需要返回值
+		pcnt = 0;
+	}
+	res = 0;
+	strtemp = str;
+	while (*strtemp != '(' && *strtemp != '\0') { //此代码找到函数名的真正起始位置
+		strtemp++;
+		res++;
+		if (*strtemp == ' ' || *strtemp == '*') {
+			nchar = DebugSerial_searchNextC(strtemp);		//获取下一个字符
+			if (nchar != '(' && nchar != '*') { offset = res; }	//跳过空格和*号
+		}
+	}
+	strtemp = str;
+	if (offset) { strtemp += offset + 1; } //跳到函数名开始的地方
+	res = 0;
+	nchar = 0; //是否正在字符串里面的标志,0，不在字符串;1，在字符串;
+	while (1) {
+		if (*strtemp == 0) {
+			res = DebugSerial_FUNCERR; //函数错误
+			break;
+		} else if (*strtemp == '(' && nchar == 0) {
+			fover++;//括号深度增加一级
+		} else if (*strtemp == ')' && nchar == 0) {
+			if (fover) { fover--; }
+			else { res = DebugSerial_FUNCERR; } //错误结束,没收到'('
+			if (fover == 0) { break; } //到末尾了,退出
+		} else if (*strtemp == '"') { nchar = !nchar; }
+
+		if (fover == 0) { //函数名还没接收完
+			if (*strtemp != ' ') { //空格不属于函数名
+				*fname = *strtemp; //得到函数名
+				fname++;
+			}
+		} else {//已经接受完了函数名了.
+			if (*strtemp == ',') {
+				temp = 1;		//使能增加一个参数
+				pcnt++;
+			} else if (*strtemp != ' ' && *strtemp != '(') {
+				if (pcnt == 0 && fplcnt < 5) {		//当第一个参数来时,为了避免统计void类型的参数,必须做判断.
+					fpname[fplcnt] = *strtemp; //记录参数特征.
+					fplcnt++;
+				}
+				temp++;	//得到有效参数(非空格)
+			}
+			if (fover == 1 && temp == 2) {
+				temp++;		//防止重复增加
+				parmnum++; 	//参数增加一个
+			}
+		}
+		strtemp++;
+	}
+	if (parmnum == 1) { //只有1个参数.
+		fpname[fplcnt] = '\0'; //加入结束符
+		if (DebugSerial_strcmp(fpname, (unsigned char*)"void") == 0) { parmnum = 0; } //参数为void,表示没有参数.
+	}
+	*pnum = parmnum;	//记录参数个数
+	*fname = '\0';	//加入结束符
+	return res;		//返回执行结果
+}
+
+unsigned char DebugSerial_getAparm(unsigned char* str, unsigned char* fparm, unsigned char* ptype)
+{
+	unsigned char i = 0;
+	unsigned char enout = 0;
+	unsigned char type = 0; //默认是数字
+	unsigned char string = 0; //标记str是否正在读
+	while (1) {
+		if (*str == ',' && string == 0) { enout = 1; }			//暂缓立即退出,目的是寻找下一个参数的起始地址
+		if ((*str == ')' || *str == '\0') && string == 0) { break; } //立即退出标识符
+		if (type == 0) { //默认是数字的
+			if ((*str >= '0' && *str <= '9') || *str == '-' || *str == '+' || (*str >= 'a' && *str <= 'f') || (*str >= 'A'
+			        && *str <= 'F') || *str == 'X' || *str == 'x') { //数字串检测
+				if (enout) { break; }					//找到了下一个参数,直接退出.
+				if (*str >= 'a') { *fparm = *str - 0X20; }	//小写转换为大写
+				else { *fparm = *str; }		   		//小写或者数字保持不变
+				fparm++;
+			} else if (*str == '"') { //找到字符串的开始标志
+				if (enout) { break; } //找到,后才找到",认为结束了.
+				type = 1;
+				string = 1; //登记STRING 正在读了
+			} else if (*str != ' ' && *str != ',') {//发现非法字符,参数错误
+				type = 0XFF;
+				break;
+			}
+		} else {//string类
+			if (*str == '"') { string = 0; }
+			if (enout) { break; }			//找到了下一个参数,直接退出.
+			if (string)	{			//字符串正在读
+				if (*str == '\\') {		//遇到转义符(不复制转义符)
+					str++;			//偏移到转义符后面的字符,不管什么字符,直接COPY
+					i++;
+				}
+				*fparm = *str;		//小写或者数字保持不变
+				fparm++;
+			}
+		}
+		i++;//偏移量增加
+		str++;
+	}
+	*fparm = '\0';	//加入结束符
+	*ptype = type;	//返回参数类型
+	return i;		//返回参数长度
+}
+
+unsigned char DebugSerial_getParmPos(unsigned char num)
+{
+	unsigned char temp=0;
+	unsigned char i;
+	for(i=0;i<num;i++)temp+=debugserial_dev.plentbl[i];
+	return temp;
+}
+
+unsigned char DebugSerial_getFparam(unsigned char*str,unsigned char *parn)
+{	
+	unsigned char i,type;  
+	unsigned int res;
+	unsigned char n=0;
+	unsigned char len;
+	unsigned char tstr[DebugSerial_PARM_LEN+1];//字节长度的缓存,最多可以存放PARM_LEN个字符的字符串
+	for(i=0;i<DebugSerial_MAX_PARM;i++)debugserial_dev.plentbl[i]=0;//清空参数长度表
+	while(*str!='(') {//偏移到参数开始的地方
+		str++;											    
+		if(*str=='\0')return DebugSerial_FUNCERR;//遇到结束符了
+	}
+	str++;//偏移到"("之后的第一个字节
+	while(1) {
+		i=DebugSerial_getAparm(str,tstr,&type);	//得到第一个参数  
+		str+=i;								//偏移
+		switch(type) {
+			case 0:	//数字
+				if(tstr[0]!='\0'){				//接收到的参数有效			    
+					i=DebugSerial_str2num(tstr,&res);	//记录该参数	 
+					if(i)return DebugSerial_PARMERR;		//参数错误.
+					*(unsigned int*)(debugserial_dev.parm+DebugSerial_getParmPos(n))=res;//记录转换成功的结果.
+					debugserial_dev.parmtype&=~(1<<n);	//标记数字
+					debugserial_dev.plentbl[n]=4;		//该参数的长度为4  
+					n++;							//参数增加  
+					if(n>DebugSerial_MAX_PARM)return DebugSerial_PARMOVER;//参数太多
+				}
+				break;
+			case 1://字符串	 	
+				len=DebugSerial_strlen(tstr)+1;	//包含了结束符'\0'
+				DebugSerial_strcopy(tstr,&debugserial_dev.parm[DebugSerial_getParmPos(n)]);//拷贝tstr数据到debugserial_dev.parm[n]
+				debugserial_dev.parmtype|=1<<n;	//标记字符串 
+				debugserial_dev.plentbl[n]=len;	//该参数的长度为len  
+				n++;
+				if(n>DebugSerial_MAX_PARM)return DebugSerial_PARMOVER;//参数太多
+				break;
+			case 0XFF://错误
+				return DebugSerial_PARMERR;//参数错误	  
+		}
+		if(*str==')'||*str=='\0')break;//查到结束标志了.
+	}
+	*parn=n;	//记录参数的个数
+	return DebugSerial_OK;//正确得到了参数
+}
+
+void DebugSerial_init(void)
+{
+	debugserial_dev.sptype=1;	//十六进制显示参数
+}	
+
+unsigned char DebugSerial_cmdRec(unsigned char*str) 
+{
+	unsigned char sta,i,rval;//状态	 
+	unsigned char rpnum,spnum;
+	unsigned char rfname[DebugSerial_MAX_FNAME_LEN];//暂存空间,用于存放接收到的函数名  
+	unsigned char sfname[DebugSerial_MAX_FNAME_LEN];//存放本地函数名
+	sta=DebugSerial_getFname(str,rfname,&rpnum,&rval);//得到接收到的数据的函数名及参数个数	  
+	if(sta)return sta;//错误
+	for(i=0;i<debugserial_dev.fnum;i++) {
+		sta=DebugSerial_getFname((unsigned char*)debugserial_dev.funs[i].name,sfname,&spnum,&rval);//得到本地函数名及参数个数
+		if(sta)return sta;//本地解析有误	  
+		if (DebugSerial_strcmp(sfname,rfname)==0) {//相等
+			if (spnum>rpnum) return DebugSerial_PARMERR;//参数错误(输入参数比源函数参数少)
+			debugserial_dev.id=i;//记录函数ID.
+			break;//跳出.
+		}	
+	}
+	if(i==debugserial_dev.fnum)return DebugSerial_NOFUNCFIND;	//未找到匹配的函数
+ 	sta=DebugSerial_getFparam(str,&i);					//得到函数参数个数	
+	if(sta)return sta;								//返回错误
+	debugserial_dev.pnum=i;								//参数个数记录
+    return DebugSerial_OK;
+}
+
+unsigned char DebugSerial_sysCmdExe(unsigned char *str)
+{
+	unsigned char i;
+	unsigned char sfname[DebugSerial_MAX_FNAME_LEN];//存放本地函数名
+	unsigned char pnum;
+	unsigned char rval;
+	unsigned int res;  
+	res=DebugSerial_getCmdName(str,sfname,&i,DebugSerial_MAX_FNAME_LEN);//得到指令及指令长度
+	if (res) return DebugSerial_FUNCERR;//错误的指令 
+	str+=i;	 	 			    
+	for (i=0;i<sizeof(sys_cmd_tab)/4;i++) {//支持的系统指令
+		if (DebugSerial_strcmp(sfname,sys_cmd_tab[i])==0) break;
+	}
+	switch (i) {					   
+		case 0:
+		case 1://帮助指令
+			DebugSerial_printf("\r\n");
+#if USMART_USE_HELP 
+			DebugSerial_printf("------------------------USMART V3.3------------------------ \r\n");
+			DebugSerial_printf("    USMART是由ALIENTEK开发的一个灵巧的串口调试互交组件,通过 \r\n");
+			DebugSerial_printf("它,你可以通过串口助手调用程序里面的任何函数,并执行.因此,你可\r\n");
+			DebugSerial_printf("以随意更改函数的输入参数(支持数字(10/16进制,支持负数)、字符串\r\n"),
+			DebugSerial_printf("、函数入口地址等作为参数),单个函数最多支持10个输入参数,并支持\r\n"),  
+			DebugSerial_printf("函数返回值显示.支持参数显示进制设置功能,支持进制转换功能.\r\n");
+			DebugSerial_printf("技术支持:www.openedv.com\r\n");
+			DebugSerial_printf("USMART有7个系统命令(必须小写):\r\n");
+			DebugSerial_printf("?:      获取帮助信息\r\n");
+			DebugSerial_printf("help:   获取帮助信息\r\n");
+			DebugSerial_printf("list:   可用的函数列表\r\n\n");
+			DebugSerial_printf("id:     可用函数的ID列表\r\n\n");
+			DebugSerial_printf("hex:    参数16进制显示,后跟空格+数字即执行进制转换\r\n\n");
+			DebugSerial_printf("dec:    参数10进制显示,后跟空格+数字即执行进制转换\r\n\n");
+			DebugSerial_printf("runtime:1,开启函数运行计时;0,关闭函数运行计时;\r\n\n");
+			DebugSerial_printf("请按照程序编写格式输入函数名及参数并以回车键结束.\r\n");    
+			DebugSerial_printf("--------------------------ALIENTEK------------------------- \r\n");
+#else
+			DebugSerial_printf("指令失效\r\n");
+#endif
+			break;
+		case 2://查询指令
+			DebugSerial_printf("\r\n");
+			DebugSerial_printf("-------------------------函数清单--------------------------- \r\n");
+			for (i=0;i<debugserial_dev.fnum;i++)DebugSerial_printf("%s\r\n",debugserial_dev.funs[i].name);
+			DebugSerial_printf("\r\n");
+			break;	 
+		case 3://查询ID
+			DebugSerial_printf("\r\n");
+			DebugSerial_printf("-------------------------函数 ID --------------------------- \r\n");
+			for (i=0;i<debugserial_dev.fnum;i++) {
+				DebugSerial_getFname((unsigned char*)debugserial_dev.funs[i].name,sfname,&pnum,&rval);//得到本地函数名 
+				DebugSerial_printf("%s id is:\r\n0X%08X\r\n",sfname,debugserial_dev.funs[i].func); //显示ID
+			}
+			DebugSerial_printf("\r\n");
+			break;
+		case 4://hex指令
+			DebugSerial_printf("\r\n");
+			DebugSerial_getAparm(str,sfname,&i);
+			if(i==0) {//参数正常
+				i=DebugSerial_str2num(sfname,&res);	   	//记录该参数	
+				if (i==0) {						  	//进制转换功能
+					DebugSerial_printf("HEX:0X%X\r\n",res);	   	//转为16进制
+				} else if (i!=4) {
+					return DebugSerial_PARMERR;//参数错误.
+				} else {
+					DebugSerial_printf("16进制参数显示!\r\n");
+					debugserial_dev.sptype=DebugSerial_TYPE_HEX;  
+				}
+
+			} else return DebugSerial_PARMERR;			//参数错误.
+			DebugSerial_printf("\r\n"); 
+			break;
+		case 5://dec指令
+			DebugSerial_printf("\r\n");
+			DebugSerial_getAparm(str,sfname,&i);
+			if(i==0) {//参数正常
+				i=DebugSerial_str2num(sfname,&res);	   	//记录该参数	
+				if (i==0) {
+					DebugSerial_printf("DEC:%lu\r\n",res);	   	//转为10进制
+				} else if (i!=4) {
+					return DebugSerial_PARMERR;//参数错误.
+				} else {
+					DebugSerial_printf("10进制参数显示!\r\n");
+					debugserial_dev.sptype=DebugSerial_TYPE_DEC;  
+				}
+
+			} else return DebugSerial_PARMERR;			//参数错误. 
+			DebugSerial_printf("\r\n"); 
+			break;    
+		default://非法指令
+			return DebugSerial_FUNCERR;
+	}
+	return 0;
+}
+
+void DebugSerial_exe(void)
+{
+	unsigned char id,i;
+	unsigned int res;		   
+	unsigned int temp[DebugSerial_MAX_PARM];//参数转换,使之支持了字符串 
+	unsigned char sfname[DebugSerial_MAX_FNAME_LEN];//存放本地函数名
+	unsigned char pnum,rval;
+	id=debugserial_dev.id;
+	if (id>=debugserial_dev.fnum) return;//不执行.
+	DebugSerial_getFname((unsigned char*)debugserial_dev.funs[id].name,sfname,&pnum,&rval);//得到本地函数名,及参数个数 
+	DebugSerial_printf("\r\n%s(",sfname);//输出正要执行的函数名
+	for (i=0;i<pnum;i++) {//输出参数
+		if (debugserial_dev.parmtype&(1<<i)) {//参数是字符串
+			DebugSerial_printf("%c",'"');			 
+			DebugSerial_printf("%s",debugserial_dev.parm+DebugSerial_getParmPos(i));
+			DebugSerial_printf("%c",'"');
+			temp[i]=(unsigned int)&(debugserial_dev.parm[DebugSerial_getParmPos(i)]);
+		} else {						  //参数是数字
+			temp[i]=*(unsigned int*)(debugserial_dev.parm+DebugSerial_getParmPos(i));
+			if(debugserial_dev.sptype==DebugSerial_TYPE_DEC) DebugSerial_printf("%d",temp[i]);//10进制参数显示
+			else DebugSerial_printf("0X%X",temp[i]);//16进制参数显示 	   
+		}
+		if(i!=pnum-1)DebugSerial_printf(",");
+	}
+	DebugSerial_printf(")");
+	switch(debugserial_dev.pnum)
+	{
+		case 0://无参数(void类型)											  
+			res=(*(unsigned int(*)())debugserial_dev.funs[id].func)();
+			break;
+	    case 1://有1个参数
+			res=(*(unsigned int(*)())debugserial_dev.funs[id].func)(temp[0]);
+			break;
+	    case 2://有2个参数
+			res=(*(unsigned int(*)())debugserial_dev.funs[id].func)(temp[0],temp[1]);
+			break;
+	    case 3://有3个参数
+			res=(*(unsigned int(*)())debugserial_dev.funs[id].func)(temp[0],temp[1],temp[2]);
+			break;
+	    case 4://有4个参数
+			res=(*(unsigned int(*)())debugserial_dev.funs[id].func)(temp[0],temp[1],temp[2],temp[3]);
+			break;
+	    case 5://有5个参数
+			res=(*(unsigned int(*)())debugserial_dev.funs[id].func)(temp[0],temp[1],temp[2],temp[3],temp[4]);
+			break;
+	    case 6://有6个参数
+			res=(*(unsigned int(*)())debugserial_dev.funs[id].func)(temp[0],temp[1],temp[2],temp[3],temp[4],\
+			temp[5]);
+			break;
+	    case 7://有7个参数
+			res=(*(unsigned int(*)())debugserial_dev.funs[id].func)(temp[0],temp[1],temp[2],temp[3],temp[4],\
+			temp[5],temp[6]);
+			break;
+	    case 8://有8个参数
+			res=(*(unsigned int(*)())debugserial_dev.funs[id].func)(temp[0],temp[1],temp[2],temp[3],temp[4],\
+			temp[5],temp[6],temp[7]);
+			break;
+	    case 9://有9个参数
+			res=(*(unsigned int(*)())debugserial_dev.funs[id].func)(temp[0],temp[1],temp[2],temp[3],temp[4],\
+			temp[5],temp[6],temp[7],temp[8]);
+			break;
+	    case 10://有10个参数
+			res=(*(unsigned int(*)())debugserial_dev.funs[id].func)(temp[0],temp[1],temp[2],temp[3],temp[4],\
+			temp[5],temp[6],temp[7],temp[8],temp[9]);
+			break;
+	}
+#if USMART_ENTIMX_SCAN==1
+	usmart_get_runtime();//获取函数执行时间
+#endif
+	if (rval==1) {//需要返回值.
+		if(debugserial_dev.sptype==DebugSerial_TYPE_DEC)DebugSerial_printf("=%u;\r\n",res);//输出执行结果(10进制参数显示)
+		else DebugSerial_printf("=0X%X;\r\n",res);//输出执行结果(16进制参数显示)	   
+	} else DebugSerial_printf(";\r\n");		//不需要返回值,直接输出结束
+	if (debugserial_dev.runtimeflag)	{//需要显示函数执行时间
+		DebugSerial_printf("Function Run Time:%d.%1dms\r\n",debugserial_dev.runtime/10,debugserial_dev.runtime%10);//打印函数执行时间 
+	}	
+}
+
+void DebugSerial_scan(void)
+{
+	unsigned char sta,len;  
+	if (DebugSerial_RX_STA&0x8000) {//串口接收完成？			   
+		len=DebugSerial_RX_STA&0x3fff;	//得到此次接收到的数据长度
+		DebugSerial_RX_BUF[len]='\0';	//在末尾加入结束符. 
+		sta=debugserial_dev.cmd_rec(DebugSerial_RX_BUF);//得到函数各个信息
+		if (sta==0) debugserial_dev.exe();	//执行函数 
+		else  {  
+			len=DebugSerial_sysCmdExe(DebugSerial_RX_BUF);
+			if (len!=DebugSerial_FUNCERR) sta=len;
+			if (sta) {   
+				switch( sta) {
+					case DebugSerial_FUNCERR:
+						printf("函数错误!\r\n");
+                      				
+						break;	
+					case DebugSerial_PARMERR:
+						printf("参数错误!\r\n");   			
+						break;				
+					case DebugSerial_PARMOVER:
+						printf("参数太多!\r\n");   			
+						break;		
+					case DebugSerial_NOFUNCFIND:
+						printf("未找到匹配的函数!\r\n");   			
+						break;		
+				}
+			}
+		}
+		DebugSerial_RX_STA=0;//状态寄存器清空	    
+	}
+}
+
+#if USMART_USE_WRFUNS==1
+unsigned int DebugSerial_readAddr(unsigned int addr)
+{
+	return *(unsigned int*)addr;//	
+}
+//在指定地址写入指定的值		 
+void DebugSerial_writeAddr(unsigned int addr,unsigned int val)
+{
+	*(unsigned int*)addr=val; 	
+}
+#endif
+
+void DebugSerial_analysisMessage(char* data, unsigned short size)
+{
+
+}

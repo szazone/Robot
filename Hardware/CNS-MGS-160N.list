@@ -1,0 +1,20 @@
+<?xml version="1.0"?>
+<SendList m_dwCycles="1">
+	<tagSendUint bIncreaseID="0" bIncreaseData="0" start_index="0" byte_length="0" iInterval="5" iTimes="1" len="1" szname="NMT Enter PreOperational" select="0" transmitas="0" obj="000000000000000000000000028003000000000000000000"></tagSendUint>
+	<tagSendUint bIncreaseID="0" bIncreaseData="0" start_index="0" byte_length="2" iInterval="5" iTimes="1" len="1" szname="关闭 TPDO1" select="0" transmitas="0" obj="030600000000000000000000082300180180010080000000"></tagSendUint>
+	<tagSendUint bIncreaseID="0" bIncreaseData="0" start_index="0" byte_length="0" iInterval="5" iTimes="1" len="1" szname="TPDO1 映射索引置 0" select="0" transmitas="0" obj="060300000000000000000000082F001A0000000000000000"></tagSendUint>
+	<tagSendUint bIncreaseID="0" bIncreaseData="0" start_index="0" byte_length="2" iInterval="5" iTimes="1" len="1" szname="TPDO1 传输类型设置（SYNC）" select="0" transmitas="0" obj="030600000000000000000000082F00180201000000000000"></tagSendUint>
+	<tagSendUint bIncreaseID="0" bIncreaseData="0" start_index="0" byte_length="0" iInterval="5" iTimes="1" len="1" szname="TPDO1 子索引 1 映射对象 左侧磁条位置" select="0" transmitas="0" obj="0603000000000000000000000823001A0110000820000000"></tagSendUint>
+	<tagSendUint bIncreaseID="0" bIncreaseData="0" start_index="0" byte_length="2" iInterval="5" iTimes="1" len="1" szname="TPDO1 子索引 2 映射对象 中间磁条位置" select="0" transmitas="0" obj="0306000000000000000000000823001A0310000920000000"></tagSendUint>
+	<tagSendUint bIncreaseID="0" bIncreaseData="0" start_index="0" byte_length="0" iInterval="5" iTimes="1" len="1" szname="TPDO1 子索引 3 映射对象 右侧磁条位置" select="0" transmitas="0" obj="0603000000000000000000000823001A0510000A20000000"></tagSendUint>
+	<tagSendUint bIncreaseID="0" bIncreaseData="0" start_index="0" byte_length="2" iInterval="5" iTimes="1" len="1" szname="TPDO1 子索引 4 映射对象 传感器状态" select="0" transmitas="0" obj="0306000000000000000000000823001A0708000220000000"></tagSendUint>
+	<tagSendUint bIncreaseID="0" bIncreaseData="0" start_index="0" byte_length="0" iInterval="5" iTimes="1" len="1" szname="TPDO1 子索引 5 映射对象 磁条感应状态" select="0" transmitas="0" obj="0306000000000000000000000823001A0808000320000000"></tagSendUint>
+	<tagSendUint bIncreaseID="0" bIncreaseData="0" start_index="0" byte_length="0" iInterval="5" iTimes="1" len="1" szname="TPDO1 映射索引置 5" select="0" transmitas="0" obj="030600000000000000000000082F001A0005000000000000"></tagSendUint>
+	<tagSendUint bIncreaseID="0" bIncreaseData="0" start_index="0" byte_length="0" iInterval="5" iTimes="1" len="1" szname="TPDO1 使能及设置 COBID" select="0" transmitas="0" obj="030600000000000000000000082300180183010000000000"></tagSendUint>
+	<tagSendUint bIncreaseID="0" bIncreaseData="0" start_index="0" byte_length="0" iInterval="5" iTimes="1" len="1" szname="关闭 TPDO2" select="0" transmitas="0" obj="030600000000000000000000082301180180020080000000"></tagSendUint>
+	<tagSendUint bIncreaseID="0" bIncreaseData="0" start_index="0" byte_length="0" iInterval="5" iTimes="1" len="1" szname="关闭 TPDO3" select="0" transmitas="0" obj="030600000000000000000000082302180180030080000000"></tagSendUint>
+	<tagSendUint bIncreaseID="0" bIncreaseData="0" start_index="0" byte_length="0" iInterval="5" iTimes="1" len="1" szname="关闭 TPDO4" select="0" transmitas="0" obj="030600000000000000000000082303180180040080000000"></tagSendUint>
+	<tagSendUint bIncreaseID="0" bIncreaseData="0" start_index="0" byte_length="0" iInterval="5" iTimes="1" len="1" szname="NMT Reset Comunication" select="0" transmitas="0" obj="000000000000000000000000028203000000000000000000"></tagSendUint>
+	<tagSendUint bIncreaseID="0" bIncreaseData="0" start_index="0" byte_length="0" iInterval="5" iTimes="1" len="1" szname="NMT Start Node" select="0" transmitas="0" obj="000000000000000000000000020103000000000000000000"></tagSendUint>
+	<tagSendUint bIncreaseID="0" bIncreaseData="0" start_index="0" byte_length="0" iInterval="5" iTimes="1" len="1" szname="SYNC" select="1" transmitas="0" obj="800000000000000000000000000000000000000000000000"></tagSendUint>
+</SendList>
